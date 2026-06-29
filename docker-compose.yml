@@ -1,0 +1,28 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: portfolio_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: portfolio
+      POSTGRES_PASSWORD: portfolio_dev_password
+      POSTGRES_DB: portfolio
+    ports:
+      - "55432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./sql:/sql:ro
+
+  dash:
+    build: .
+    container_name: portfolio_dash
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8050:8050"
+    depends_on:
+      - postgres
+    command: python app/dash_app.py
+
+volumes:
+  postgres_data:

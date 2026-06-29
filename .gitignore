@@ -1,0 +1,40 @@
+# macOS
+.DS_Store
+
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Notebooks and editor state
+.ipynb_checkpoints/
+.vscode/
+.idea/
+
+# Local data and logs
+data/inbox/*
+data/raw/*
+logs/*
+!data/inbox/.gitkeep
+!data/raw/.gitkeep
+!logs/.gitkeep
+
+# Local databases and exports
+*.sqlite
+*.db
+*.parquet

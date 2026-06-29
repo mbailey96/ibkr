@@ -1,0 +1,12 @@
+patterns:
+  flex_trades:
+    filename_contains: ["Trades"]
+  flex_cash:
+    filename_contains: ["Cash"]
+  flex_interest:
+    filename_contains: ["Interest"]
+  flex_corporate_actions:
+    filename_contains: ["Corporate_Actions"]
+  portfolio_summary:
+    filename_contains: ["Inception", "Portfolio"]
+

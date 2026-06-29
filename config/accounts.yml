@@ -1,0 +1,10 @@
+accounts:
+  - account_id: U24765593
+    owner: Michael Bailey
+    base_currency: GBP
+    label: IBKR GIA
+  - account_id: U25245520
+    owner: Michael Bailey
+    base_currency: GBP
+    label: IBKR ISA
+
