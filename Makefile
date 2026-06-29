@@ -7,13 +7,13 @@ INBOX_DIR ?= ./data/inbox
 SAMPLE_DIR ?= ../temp_files
 PYTHON ?= python
 
-.PHONY: init-db fetch-email ingest-local ingest-samples rebuild-staging validate run-pipeline install-schedule uninstall-schedule app test
+.PHONY: init-db fetch-flex ingest-local ingest-samples rebuild-staging validate run-pipeline install-schedule uninstall-schedule app test
 
 init-db:
 	$(PYTHON) scripts/initialise_db.py
 
-fetch-email:
-	$(PYTHON) scripts/fetch_email_attachments.py
+fetch-flex:
+	$(PYTHON) scripts/fetch_flex_statement.py
 
 ingest-local:
 	$(PYTHON) scripts/ingest_local_files.py data/inbox

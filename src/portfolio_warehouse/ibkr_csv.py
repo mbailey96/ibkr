@@ -33,12 +33,33 @@ class ParsedPortfolioRow:
     raw_values: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class ParsedFlexSectionRow:
+    row_number: int
+    account_id: str | None
+    section_code: str
+    section_name: str | None
+    payload: dict[str, Any]
+
+
 def detect_report_type(path: str | Path) -> str:
+    if Path(path).exists() and is_sectioned_flex_file(path):
+        return "flex_statement"
     name = Path(path).name.lower()
     for report_type, patterns in REPORT_PATTERNS.items():
         if any(pattern in name for pattern in patterns):
             return report_type
     raise ValueError(f"Could not detect IBKR report type for {Path(path).name}")
+
+
+def is_sectioned_flex_file(path: str | Path) -> bool:
+    with Path(path).open(newline="") as handle:
+        reader = csv.reader(handle)
+        for row in reader:
+            if not row or not any(cell.strip() for cell in row):
+                continue
+            return row[0].strip() == "BOF"
+    return False
 
 
 def file_sha256(path: str | Path) -> str:
@@ -82,6 +103,62 @@ def iter_portfolio_summary_rows(path: str | Path) -> Iterator[ParsedPortfolioRow
                 section=row[0].strip(),
                 row_type=row[1].strip(),
                 raw_values={"values": row[2:]},
+            )
+
+
+def iter_flex_section_rows(path: str | Path) -> Iterator[ParsedFlexSectionRow]:
+    account_id: str | None = None
+    section_code: str | None = None
+    section_name: str | None = None
+    header: list[str] | None = None
+    section_row_number = 0
+
+    with Path(path).open(newline="") as handle:
+        reader = csv.reader(handle)
+        for row_number, row in enumerate(reader, start=1):
+            if not row or not any(cell.strip() for cell in row):
+                continue
+            marker = row[0].strip()
+            if marker == "BOA":
+                account_id = row[1].strip() if len(row) > 1 and row[1].strip() else None
+                continue
+            if marker == "EOA":
+                account_id = None
+                continue
+            if marker == "BOS":
+                section_code = row[1].strip() if len(row) > 1 else None
+                section_name = row[2].strip() if len(row) > 2 and row[2].strip() else None
+                header = None
+                section_row_number = 0
+                continue
+            if marker == "HEADER":
+                if len(row) > 1:
+                    section_code = row[1].strip()
+                header = row[2:]
+                section_row_number = 0
+                continue
+            if marker == "EOS":
+                section_code = None
+                section_name = None
+                header = None
+                section_row_number = 0
+                continue
+            if marker != "DATA" or not section_code or header is None:
+                continue
+
+            row_section_code = row[1].strip() if len(row) > 1 else section_code
+            values = row[2:]
+            payload = {column: values[index] if index < len(values) else "" for index, column in enumerate(header)}
+            if len(values) > len(header):
+                payload["_extra_columns"] = values[len(header) :]
+            section_row_number += 1
+            payload["_section_row_number"] = section_row_number
+            yield ParsedFlexSectionRow(
+                row_number=row_number,
+                account_id=account_id,
+                section_code=row_section_code,
+                section_name=section_name,
+                payload=payload,
             )
 
 
@@ -133,4 +210,3 @@ def parse_period(value: str) -> tuple[date | None, date | None]:
             left, right = text.split(separator, 1)
             return parse_date(left), parse_date(right)
     return None, None
-

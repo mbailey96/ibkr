@@ -13,6 +13,7 @@ from portfolio_warehouse.db import connect
 from portfolio_warehouse.ibkr_csv import (
     detect_report_type,
     file_sha256,
+    iter_flex_section_rows,
     iter_flex_rows,
     iter_portfolio_summary_rows,
     safe_filename,
@@ -73,6 +74,8 @@ def ingest_file(path: str | Path) -> IngestResult:
 
         if report_type == "portfolio_summary":
             rows = list(iter_portfolio_summary_rows(source_path))
+        elif report_type == "flex_statement":
+            rows = list(iter_flex_section_rows(source_path))
         else:
             rows = list(iter_flex_rows(source_path))
 
@@ -107,6 +110,24 @@ def ingest_file(path: str | Path) -> IngestResult:
                         values (%s, %s, %s, %s, %s)
                         """,
                         (report_id, row.row_number, row.section, row.row_type, Jsonb(row.raw_values)),
+                    )
+            elif report_type == "flex_statement":
+                for row in rows:
+                    conn.execute(
+                        """
+                        insert into raw.ibkr_flex_statement_row (
+                            report_id, row_number, account_id, section_code, section_name, raw_payload
+                        )
+                        values (%s, %s, %s, %s, %s, %s)
+                        """,
+                        (
+                            report_id,
+                            row.row_number,
+                            row.account_id,
+                            row.section_code,
+                            row.section_name,
+                            Jsonb(row.payload),
+                        ),
                     )
             else:
                 for row in rows:

@@ -74,6 +74,7 @@ select
     max(rf.ingested_at) filter (where rf.report_type = 'flex_trades') as latest_trades_at,
     max(rf.ingested_at) filter (where rf.report_type = 'flex_cash') as latest_cash_at,
     max(rf.ingested_at) filter (where rf.report_type = 'flex_interest') as latest_interest_at,
+    max(rf.ingested_at) filter (where rf.report_type = 'flex_statement') as latest_flex_statement_at,
     count(*) as source_file_count
 from raw.report_file rf
 where rf.source_system = 'ibkr';
@@ -308,9 +309,21 @@ reconciliation as (
 ),
 checks as (
     select
+        'flex_statement_latest'::text as check_name,
+        case when exists (select 1 from report_counts where report_type = 'flex_statement') then 'pass' else 'warning' end as status,
+        coalesce((select file_count::text || ' file(s), latest at ' || latest_ingested_at::text from report_counts where report_type = 'flex_statement'), 'no sectioned flex statement files') as details
+    union all
+    select
         'portfolio_summary_latest'::text as check_name,
-        case when exists (select 1 from report_counts where report_type = 'portfolio_summary') then 'pass' else 'fail' end as status,
-        coalesce((select 'latest at ' || latest_ingested_at::text from report_counts where report_type = 'portfolio_summary'), 'no portfolio summary files') as details
+        case
+            when exists (select 1 from report_counts where report_type in ('portfolio_summary', 'flex_statement')) then 'pass'
+            else 'fail'
+        end as status,
+        coalesce(
+            (select 'portfolio summary latest at ' || latest_ingested_at::text from report_counts where report_type = 'portfolio_summary'),
+            (select 'sectioned flex latest at ' || latest_ingested_at::text from report_counts where report_type = 'flex_statement'),
+            'no portfolio summary or sectioned flex files'
+        ) as details
     union all
     select
         'flex_trades_latest',
