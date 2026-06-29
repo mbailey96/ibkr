@@ -45,18 +45,20 @@ make PYTHON=/Users/mbailey/opt/anaconda3/envs/py311/bin/python run-pipeline
 
 That command:
 
-1. Fetches matching IBKR CSV/ZIP attachments from iCloud IMAP into `data/inbox`.
-2. Moves processed messages to `EMAIL_PROCESSED_FOLDER`.
-3. Ingests inbox CSVs into the raw archive and raw tables.
-4. Rebuilds staging tables.
-5. Runs reconciliation validation.
-6. Writes Loguru logs to `LOG_DIR`.
-7. Sends a failure email if any step fails.
+1. Fetches the configured IBKR source into `data/inbox`.
+2. Ingests inbox CSVs into the raw archive and raw tables.
+3. Rebuilds staging tables.
+4. Runs reconciliation validation.
+5. Writes Loguru logs to `LOG_DIR`.
+6. Sends a failure email if any step fails.
 
-Dry-run the email fetch path:
+The default source is `PIPELINE_FETCH_SOURCE=flex`, which calls IBKR Flex Web Service. Use `PIPELINE_FETCH_SOURCE=local` to skip remote fetching and process files already present in `data/inbox`.
+Scheduled launchd runs pass `--notify-success`, so they send a minimal success email after data loads and validation passes. Manual/dev runs stay quiet unless you pass `--notify-success` yourself.
+
+Dry-run the Flex Web Service request path:
 
 ```bash
-/Users/mbailey/opt/anaconda3/envs/py311/bin/python scripts/run_pipeline.py --dry-run-email --no-failure-email
+/Users/mbailey/opt/anaconda3/envs/py311/bin/python scripts/fetch_flex_statement.py --dry-run
 ```
 
 ## macOS Schedule
@@ -76,20 +78,26 @@ make PYTHON=/Users/mbailey/opt/anaconda3/envs/py311/bin/python uninstall-schedul
 The schedule uses:
 
 ```text
-PIPELINE_SCHEDULE_HOUR=8
-PIPELINE_SCHEDULE_MINUTE=15
+PIPELINE_SCHEDULE_HOUR=20
+PIPELINE_SCHEDULE_MINUTE=0
 ```
 
 ## Environment
 
-Required for email fetching:
+Required for Flex Web Service fetching:
 
 ```text
-EMAIL_USER=your_icloud_email@example.com
-EMAIL_APP_PASSWORD=your_app_specific_password
-EMAIL_FOLDER=INBOX
-EMAIL_PROCESSED_FOLDER=IBKR Processed
+PIPELINE_FETCH_SOURCE=flex
+IBKR_FLEX_TOKEN=your_flex_web_service_token
+IBKR_FLEX_QUERY_ID=your_flex_query_id
+IBKR_FLEX_BASE_URL=https://ndcdyn.interactivebrokers.com/AccountManagement/FlexWebService
+IBKR_FLEX_API_VERSION=3
+IBKR_FLEX_POLL_SECONDS=5
+IBKR_FLEX_MAX_POLLS=12
+IBKR_FLEX_OUTPUT_NAME=ibkr_flex_statement.csv
 ```
+
+The Flex query should return a sectioned CSV with `BOF`, `BOA`, `BOS`, `HEADER`, `DATA`, `EOS`, `EOA`, and `EOF` rows. The MVP parser currently stages `EQUT`, `CNAV`, `POST`, `TRNT`, `CTRN`, `CORP`, and `TIER`.
 
 Optional notification overrides:
 
@@ -101,17 +109,16 @@ SMTP_USER=your_icloud_email@example.com
 SMTP_PASSWORD=your_app_specific_password
 NOTIFY_EMAIL_FROM=your_icloud_email@example.com
 NOTIFY_EMAIL_TO=your_notification_email@example.com
-NOTIFY_ON_SUCCESS=false
 ```
 
-If SMTP values are omitted, the pipeline reuses `EMAIL_USER` and `EMAIL_APP_PASSWORD`. If `NOTIFY_EMAIL_TO` is omitted, it falls back to `EMAIL_USER`.
+If SMTP values are omitted, the pipeline also accepts the legacy `EMAIL_USER` and `EMAIL_APP_PASSWORD` environment variables as SMTP fallbacks.
 
 ## Logs
 
 - `logs/pipeline.log`: scheduled pipeline
 - `logs/launchd.out.log`: launchd stdout
 - `logs/launchd.err.log`: launchd stderr
-- `logs/fetch_email.log`: manual email fetch
+- `logs/fetch_flex.log`: manual Flex Web Service fetch
 - `logs/ingest_local.log`: manual local ingestion
 - `logs/transforms.log`: manual staging rebuild
 - `logs/validation.log`: manual reconciliation validation

@@ -25,6 +25,16 @@ create table if not exists raw.ibkr_flex_row (
     primary key (report_id, row_number)
 );
 
+create table if not exists raw.ibkr_flex_statement_row (
+    report_id uuid not null references raw.report_file(report_id),
+    row_number integer not null,
+    account_id text,
+    section_code text not null,
+    section_name text,
+    raw_payload jsonb not null,
+    primary key (report_id, row_number)
+);
+
 create table if not exists raw.ibkr_portfolio_summary_row (
     report_id uuid not null references raw.report_file(report_id),
     row_number integer not null,
@@ -40,6 +50,8 @@ create index if not exists idx_report_file_type_ingested
 create index if not exists idx_ibkr_flex_row_type
     on raw.ibkr_flex_row(report_type);
 
+create index if not exists idx_ibkr_flex_statement_section
+    on raw.ibkr_flex_statement_row(section_code, account_id);
+
 create index if not exists idx_ibkr_summary_section
     on raw.ibkr_portfolio_summary_row(section);
-

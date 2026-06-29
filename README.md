@@ -5,7 +5,7 @@ Local portfolio warehouse for IBKR reports, backed by Postgres and a Dash dashbo
 ## What It Does
 
 ```text
-IBKR CSV/ZIP email attachments
+IBKR Flex Web Service or local CSV files
   -> data/inbox
   -> immutable raw archive and raw Postgres tables
   -> typed staging tables
@@ -15,6 +15,7 @@ IBKR CSV/ZIP email attachments
 
 Supported inputs:
 
+- Sectioned Flex statement CSVs, including NAV, positions, trades, cash, corporate actions, and interest tiers
 - PortfolioAnalyst summary CSVs
 - Flex `Trades.csv`
 - Flex `Cash.csv`
@@ -30,7 +31,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 docker compose up -d postgres
 make init-db
-make ingest-samples SAMPLE_DIR=../temp_files
+make ingest-local
 make rebuild-staging
 make validate
 make app
@@ -44,7 +45,9 @@ Dash runs at http://localhost:8050.
 make run-pipeline
 ```
 
-The pipeline fetches matching iCloud IMAP attachments, ingests new local files, rebuilds staging, validates reconciliation, writes Loguru logs under `logs/`, and sends an email on failure.
+The pipeline fetches the configured IBKR source, ingests new local files, rebuilds staging, validates reconciliation, writes Loguru logs under `logs/`, and sends an email on failure.
+By default, `PIPELINE_FETCH_SOURCE=flex` downloads the configured Flex query via IBKR Flex Web Service. Use `PIPELINE_FETCH_SOURCE=local` to skip remote fetching and only ingest files already present in `data/inbox`.
+Scheduled runs also send a minimal success email after data loads and validation passes. Manual/dev runs do not send success emails unless run with `--notify-success`.
 
 Install the local macOS schedule:
 
@@ -62,7 +65,7 @@ make uninstall-schedule
 
 ```bash
 make init-db
-make fetch-email
+make fetch-flex
 make ingest-local
 make rebuild-staging
 make validate
@@ -77,7 +80,7 @@ The repo intentionally excludes:
 
 - `.env`
 - raw IBKR files under `data/raw/`
-- downloaded email attachments under `data/inbox/`
+- downloaded or manually staged source files under `data/inbox/`
 - logs under `logs/`
 - Python caches and virtual environments
 

@@ -23,15 +23,6 @@ class Settings:
     inbox_dir: Path
     log_dir: Path
     log_level: str
-    email_host: str
-    email_port: int
-    email_user: str | None
-    email_app_password: str | None
-    email_folder: str
-    email_processed_folder: str
-    ibkr_email_from_contains: str
-    ibkr_email_subject_contains: tuple[str, ...]
-    email_lookback_days: int
     smtp_host: str
     smtp_port: int
     smtp_user: str | None
@@ -39,10 +30,16 @@ class Settings:
     smtp_starttls: bool
     notify_email_from: str | None
     notify_email_to: tuple[str, ...]
-    notify_on_success: bool
-    pipeline_email_limit: int | None
-    schedule_hour: int
-    schedule_minute: int
+    ibkr_flex_token: str | None = None
+    ibkr_flex_query_id: str | None = None
+    ibkr_flex_base_url: str = "https://ndcdyn.interactivebrokers.com/AccountManagement/FlexWebService"
+    ibkr_flex_api_version: int = 3
+    ibkr_flex_poll_seconds: float = 5
+    ibkr_flex_max_polls: int = 12
+    ibkr_flex_output_name: str = "ibkr_flex_statement.csv"
+    pipeline_fetch_source: str = "flex"
+    schedule_hour: int = 8
+    schedule_minute: int = 15
 
 
 def get_settings() -> Settings:
@@ -60,25 +57,6 @@ def get_settings() -> Settings:
         inbox_dir=Path(os.environ.get("INBOX_DIR", "./data/inbox")),
         log_dir=Path(os.environ.get("LOG_DIR", "./logs")),
         log_level=os.environ.get("LOG_LEVEL", "INFO").upper(),
-        email_host=os.environ.get("EMAIL_HOST", "imap.mail.me.com"),
-        email_port=int(os.environ.get("EMAIL_PORT", "993")),
-        email_user=email_user,
-        email_app_password=email_app_password,
-        email_folder=os.environ.get("EMAIL_FOLDER", "INBOX"),
-        email_processed_folder=os.environ.get("EMAIL_PROCESSED_FOLDER", "IBKR Processed"),
-        ibkr_email_from_contains=os.environ.get(
-            "IBKR_EMAIL_FROM_CONTAINS",
-            os.environ.get("IBKR_EMAIL_FROM", "interactivebrokers"),
-        ),
-        ibkr_email_subject_contains=tuple(
-            part.strip().lower()
-            for part in os.environ.get(
-                "IBKR_EMAIL_SUBJECT_CONTAINS",
-                "flex,statement,activity,portfolio",
-            ).split(",")
-            if part.strip()
-        ),
-        email_lookback_days=int(os.environ.get("EMAIL_LOOKBACK_DAYS", "30")),
         smtp_host=os.environ.get("SMTP_HOST", "smtp.mail.me.com"),
         smtp_port=int(os.environ.get("SMTP_PORT", "587")),
         smtp_user=smtp_user,
@@ -90,8 +68,17 @@ def get_settings() -> Settings:
             for part in os.environ.get("NOTIFY_EMAIL_TO", email_user or "").split(",")
             if part.strip()
         ),
-        notify_on_success=_env_bool("NOTIFY_ON_SUCCESS", False),
-        pipeline_email_limit=_env_int_or_none("PIPELINE_EMAIL_LIMIT"),
+        ibkr_flex_token=os.environ.get("IBKR_FLEX_TOKEN") or os.environ.get("IBKR_FLEX_WEB_TOKEN"),
+        ibkr_flex_query_id=os.environ.get("IBKR_FLEX_QUERY_ID"),
+        ibkr_flex_base_url=os.environ.get(
+            "IBKR_FLEX_BASE_URL",
+            "https://ndcdyn.interactivebrokers.com/AccountManagement/FlexWebService",
+        ).rstrip("/"),
+        ibkr_flex_api_version=int(os.environ.get("IBKR_FLEX_API_VERSION", "3")),
+        ibkr_flex_poll_seconds=float(os.environ.get("IBKR_FLEX_POLL_SECONDS", "5")),
+        ibkr_flex_max_polls=int(os.environ.get("IBKR_FLEX_MAX_POLLS", "12")),
+        ibkr_flex_output_name=os.environ.get("IBKR_FLEX_OUTPUT_NAME", "ibkr_flex_statement.csv"),
+        pipeline_fetch_source=os.environ.get("PIPELINE_FETCH_SOURCE", "flex").strip().lower(),
         schedule_hour=int(os.environ.get("PIPELINE_SCHEDULE_HOUR", "8")),
         schedule_minute=int(os.environ.get("PIPELINE_SCHEDULE_MINUTE", "15")),
     )
@@ -102,10 +89,3 @@ def _env_bool(name: str, default: bool) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "y", "on"}
-
-
-def _env_int_or_none(name: str) -> int | None:
-    value = os.environ.get(name)
-    if not value:
-        return None
-    return int(value)

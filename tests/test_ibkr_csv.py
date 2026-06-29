@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from portfolio_warehouse.ibkr_csv import detect_report_type, iter_flex_rows, parse_decimal, parse_period
+from portfolio_warehouse.ibkr_csv import detect_report_type, iter_flex_rows, iter_flex_section_rows, parse_decimal, parse_period
 
 
 class IbkrCsvTests(unittest.TestCase):
@@ -22,6 +22,29 @@ class IbkrCsvTests(unittest.TestCase):
         self.assertEqual(rows[0].payload["TransactionID"], "T1")
         self.assertEqual(rows[1].payload["Amount"], "20")
 
+    def test_sectioned_flex_rows_are_parsed(self) -> None:
+        text = "\n".join(
+            [
+                '"BOF","U1","All","1","2026-01-01"',
+                '"BOA","U1"',
+                '"BOS","TRNT","Trades; trade date basis"',
+                '"HEADER","TRNT","ClientAccountID","TransactionID","Amount"',
+                '"DATA","TRNT","U1","T1","10"',
+                '"EOS","TRNT","1","10"',
+                '"EOA","U1"',
+                '"EOF"',
+            ]
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "All.csv"
+            path.write_text(text)
+            self.assertEqual(detect_report_type(path), "flex_statement")
+            rows = list(iter_flex_section_rows(path))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].account_id, "U1")
+        self.assertEqual(rows[0].section_code, "TRNT")
+        self.assertEqual(rows[0].payload["TransactionID"], "T1")
+
     def test_parse_decimal_and_period(self) -> None:
         self.assertEqual(str(parse_decimal("1,234.50")), "1234.50")
         start, end = parse_period("March 6, 2026 - June 26, 2026")
@@ -31,4 +54,3 @@ class IbkrCsvTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

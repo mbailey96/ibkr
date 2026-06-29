@@ -42,6 +42,7 @@ def main(argv: list[str] | None = None) -> int:
         "ProgramArguments": [
             sys.executable,
             str(root / "scripts" / "run_pipeline.py"),
+            "--notify-success",
         ],
         "WorkingDirectory": str(root),
         "StartCalendarInterval": {

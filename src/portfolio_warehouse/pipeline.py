@@ -8,7 +8,7 @@ from datetime import datetime
 
 from loguru import logger
 
-from portfolio_warehouse.email_fetch import fetch_ibkr_attachments
+from portfolio_warehouse.flex_web import fetch_flex_statement
 from portfolio_warehouse.ingest_files import IngestResult, ingest_paths
 from portfolio_warehouse.notifications import send_notification_email
 from portfolio_warehouse.settings import Settings, get_settings
@@ -24,10 +24,7 @@ class PipelineValidationError(RuntimeError):
 class PipelineResult:
     started_at: datetime
     finished_at: datetime | None = None
-    scanned_messages: int = 0
-    matched_messages: int = 0
-    downloaded_attachments: int = 0
-    moved_messages: int = 0
+    downloaded_files: int = 0
     ingest_results: list[IngestResult] = field(default_factory=list)
     validation_messages: list[str] = field(default_factory=list)
 
@@ -40,39 +37,25 @@ class PipelineResult:
         return sum(1 for result in self.ingest_results if result.skipped)
 
 
-def run_pipeline(*, settings: Settings | None = None, dry_run_email: bool = False) -> PipelineResult:
+def run_pipeline(*, settings: Settings | None = None, dry_run_fetch: bool = False) -> PipelineResult:
     settings = settings or get_settings()
     result = PipelineResult(started_at=datetime.now())
 
     logger.info("Starting IBKR portfolio warehouse pipeline")
-    email_result = _timed_step(
-        "fetch_email",
-        lambda: fetch_ibkr_attachments(
-            settings=settings,
-            dry_run=dry_run_email,
-            move_processed=not dry_run_email,
-            limit=settings.pipeline_email_limit,
-        ),
-    )
-    result.scanned_messages = email_result.scanned_messages
-    result.matched_messages = email_result.matched_messages
-    result.downloaded_attachments = len(email_result.attachments)
-    result.moved_messages = email_result.moved_messages
-    logger.info(
-        "Email fetch complete: scanned={}, matched={}, attachments={}, moved={}",
-        result.scanned_messages,
-        result.matched_messages,
-        result.downloaded_attachments,
-        result.moved_messages,
-    )
-    for attachment in email_result.attachments:
-        logger.info(
-            "Downloaded {} attachment {} to {} ({} bytes)",
-            attachment.report_type,
-            attachment.original_filename,
-            attachment.stored_path,
-            attachment.byte_count,
-        )
+    if settings.pipeline_fetch_source == "flex":
+        flex_result = _timed_step("fetch_flex", lambda: fetch_flex_statement(settings=settings, dry_run=dry_run_fetch))
+        if flex_result is not None:
+            result.downloaded_files = 1
+            logger.info(
+                "Downloaded Flex statement to {} ({} bytes, reference={})",
+                flex_result.stored_path,
+                flex_result.byte_count,
+                flex_result.reference_code,
+            )
+    elif settings.pipeline_fetch_source in {"none", "local"}:
+        logger.info("Skipping remote fetch because PIPELINE_FETCH_SOURCE={}", settings.pipeline_fetch_source)
+    else:
+        raise ValueError("PIPELINE_FETCH_SOURCE must be one of: flex, local, none")
 
     result.ingest_results = _timed_step("ingest_local_files", lambda: ingest_paths([settings.inbox_dir]))
     if not result.ingest_results:
@@ -131,23 +114,19 @@ def notify_failure(*, settings: Settings, log_path: str, exc: BaseException) -> 
 
 
 def notify_success(*, settings: Settings, result: PipelineResult, log_path: str) -> bool:
-    subject = "IBKR portfolio warehouse pipeline succeeded"
+    subject = "IBKR portfolio warehouse loaded successfully"
     finished = result.finished_at or datetime.now()
     body = "\n".join(
         [
-            "The scheduled IBKR portfolio warehouse pipeline completed successfully.",
+            "IBKR portfolio warehouse data loaded successfully.",
             "",
-            f"Host: {socket.gethostname()}",
             f"Started: {result.started_at.isoformat(timespec='seconds')}",
             f"Finished: {finished.isoformat(timespec='seconds')}",
-            f"Log file: {log_path}",
-            "",
-            f"Emails scanned: {result.scanned_messages}",
-            f"Emails matched: {result.matched_messages}",
-            f"Attachments downloaded: {result.downloaded_attachments}",
-            f"Messages moved: {result.moved_messages}",
+            f"Flex files downloaded: {result.downloaded_files}",
             f"Files ingested: {result.ingested_count}",
             f"Files skipped: {result.skipped_count}",
+            f"Validation messages: {len(result.validation_messages)}",
+            f"Log file: {log_path}",
         ]
     )
     return send_notification_email(settings=settings, subject=subject, body=body)

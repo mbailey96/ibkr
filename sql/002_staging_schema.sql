@@ -126,6 +126,7 @@ create table if not exists staging.ibkr_key_statistics (
 create table if not exists staging.ibkr_position_snapshot (
     position_snapshot_id text primary key,
     report_id uuid not null,
+    account_id text,
     as_of_date date,
     financial_instrument text,
     currency text,
