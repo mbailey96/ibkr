@@ -84,6 +84,8 @@ def fmt_datetime(value: object) -> str:
     timestamp = pd.to_datetime(value, errors="coerce")
     if pd.isna(timestamp):
         return "-"
+    if timestamp.tzinfo is not None:
+        timestamp = timestamp.tz_convert(datetime.now().astimezone().tzinfo)
     return timestamp.strftime("%d %b %Y %H:%M")
 
 

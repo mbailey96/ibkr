@@ -46,6 +46,77 @@ def portfolio_value_line(df: pd.DataFrame) -> go.Figure:
     return _style(fig)
 
 
+def portfolio_value_by_account_line(df: pd.DataFrame) -> go.Figure:
+    if df.empty or "as_of_date" not in df or "ending_nav" not in df or "account" not in df:
+        return empty_figure("Account NAV history will appear after reports accumulate")
+    fig = go.Figure()
+    for account, group in df.sort_values("as_of_date").groupby("account"):
+        fig.add_trace(
+            go.Scatter(
+                x=group["as_of_date"],
+                y=group["ending_nav"],
+                mode="lines",
+                name=str(account),
+                hovertemplate="%{fullData.name}<br>%{x}<br>£%{y:,.2f}<extra></extra>",
+            )
+        )
+    fig.update_layout(xaxis_title="", yaxis_title="NAV")
+    return _style(fig)
+
+
+def asset_performance_bar(df: pd.DataFrame) -> go.Figure:
+    required = {"symbol", "description", "total_pnl_ytd"}
+    if df.empty or not required.issubset(df.columns):
+        return empty_figure("Asset performance will appear after MYTD data loads")
+    plot_df = df.copy()
+    plot_df["label"] = plot_df["symbol"].fillna(plot_df["description"])
+    plot_df["total_pnl_ytd"] = pd.to_numeric(plot_df["total_pnl_ytd"], errors="coerce").fillna(0)
+    plot_df = plot_df[plot_df["total_pnl_ytd"] != 0]
+    if plot_df.empty:
+        return empty_figure("No non-zero YTD asset performance yet")
+    plot_df = plot_df.reindex(plot_df["total_pnl_ytd"].abs().sort_values(ascending=False).index).head(12)
+    plot_df = plot_df.sort_values("total_pnl_ytd")
+    fig = go.Figure(
+        go.Bar(
+            x=plot_df["total_pnl_ytd"],
+            y=plot_df["label"],
+            orientation="h",
+            marker_color=["#14804a" if value >= 0 else "#b42318" for value in plot_df["total_pnl_ytd"]],
+            hovertemplate="%{y}<br>£%{x:,.2f}<extra></extra>",
+        )
+    )
+    fig.update_layout(xaxis_title="YTD PnL", yaxis_title="")
+    return _style(fig)
+
+
+def asset_class_contribution_bar(df: pd.DataFrame) -> go.Figure:
+    if df.empty or "asset_class" not in df:
+        return empty_figure("Asset class contribution will appear after CPOV data loads")
+    grouped = (
+        df.groupby("asset_class", dropna=False)[["transactions", "total_mtm_pnl", "settled_cash", "end_of_period_value"]]
+        .sum(numeric_only=True)
+        .reset_index()
+    )
+    if grouped.empty:
+        return empty_figure("Asset class contribution will appear after CPOV data loads")
+    fig = go.Figure()
+    series = [
+        ("transactions", "#1f4e79"),
+        ("total_mtm_pnl", "#14804a"),
+        ("settled_cash", "#667085"),
+    ]
+    for column, color in series:
+        fig.add_bar(
+            name=column.replace("_", " ").title(),
+            x=grouped["asset_class"],
+            y=grouped[column],
+            marker_color=color,
+            hovertemplate="%{x}<br>£%{y:,.2f}<extra>%{fullData.name}</extra>",
+        )
+    fig.update_layout(barmode="group", xaxis_title="", yaxis_title="Contribution")
+    return _style(fig)
+
+
 def monthly_attribution_bar(df: pd.DataFrame) -> go.Figure:
     if df.empty or "month_start" not in df:
         return empty_figure("Monthly attribution will appear after cashflows accumulate")
@@ -77,7 +148,7 @@ def monthly_attribution_bar(df: pd.DataFrame) -> go.Figure:
 
 def nav_change_breakdown_bar(df: pd.DataFrame) -> go.Figure:
     if df.empty:
-        return empty_figure("NAV change attribution will appear after PortfolioAnalyst data loads")
+        return empty_figure("NAV change attribution will appear after Flex statement data loads")
     row = df.iloc[0]
     values = {
         "Contributions": row.get("total_contributions"),
@@ -94,7 +165,7 @@ def nav_change_breakdown_bar(df: pd.DataFrame) -> go.Figure:
         ]
     )
     if plot_df.empty:
-        return empty_figure("NAV change attribution will appear after PortfolioAnalyst data loads")
+        return empty_figure("NAV change attribution will appear after Flex statement data loads")
     colors = ["#14804a" if value >= 0 else "#b42318" for value in plot_df["value"]]
     fig = go.Figure(
         go.Bar(
@@ -108,18 +179,6 @@ def nav_change_breakdown_bar(df: pd.DataFrame) -> go.Figure:
     )
     fig.update_layout(xaxis_title="")
     _apply_signed_log_axis(fig, plot_df["value"].tolist(), "NAV change")
-    return _style(fig)
-
-
-def monthly_returns_bar(df: pd.DataFrame) -> go.Figure:
-    if df.empty or "month_label" not in df:
-        return empty_figure("Monthly returns will appear after benchmark data accumulates")
-    fig = go.Figure()
-    if "account_return" in df:
-        fig.add_bar(name="Portfolio", x=df["month_label"], y=df["account_return"], marker_color="#1f4e79")
-    if "bm1_return" in df:
-        fig.add_bar(name="BM1", x=df["month_label"], y=df["bm1_return"], marker_color="#667085")
-    fig.update_layout(barmode="group", xaxis_title="", yaxis_title="Return %")
     return _style(fig)
 
 

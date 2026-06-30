@@ -16,11 +16,6 @@ IBKR Flex Web Service or local CSV files
 Supported inputs:
 
 - Sectioned Flex statement CSVs, including NAV, positions, trades, cash, corporate actions, and interest tiers
-- PortfolioAnalyst summary CSVs
-- Flex `Trades.csv`
-- Flex `Cash.csv`
-- Flex `Interest.csv`
-- Flex `Corporate_Actions.csv`
 
 ## Quick Start
 
@@ -38,6 +33,8 @@ make app
 ```
 
 Dash runs at http://localhost:8050.
+
+The dashboard header includes `Reload From IBKR`, which runs the Flex pipeline, writes the result to Postgres, and refreshes the displayed data.
 
 ## Daily Pipeline
 

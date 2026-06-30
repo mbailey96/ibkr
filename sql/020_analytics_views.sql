@@ -61,19 +61,14 @@ create or replace view analytics.v_interest_history as
 select *
 from staging.ibkr_interest;
 
-create or replace view analytics.v_benchmark_comparison as
-select *
-from staging.ibkr_benchmark_return;
-
 create or replace view analytics.v_latest_refresh as
 select
-    max(rf.ingested_at) as last_updated_at,
+    coalesce(
+        (select max(finished_at) from raw.pipeline_run where source_system = 'ibkr' and status = 'success'),
+        max(rf.ingested_at)
+    ) as last_updated_at,
     (select min(period_start) from staging.ibkr_key_statistics) as earliest_period_start,
     (select max(period_end) from staging.ibkr_key_statistics) as latest_period_end,
-    max(rf.ingested_at) filter (where rf.report_type = 'portfolio_summary') as latest_portfolio_summary_at,
-    max(rf.ingested_at) filter (where rf.report_type = 'flex_trades') as latest_trades_at,
-    max(rf.ingested_at) filter (where rf.report_type = 'flex_cash') as latest_cash_at,
-    max(rf.ingested_at) filter (where rf.report_type = 'flex_interest') as latest_interest_at,
     max(rf.ingested_at) filter (where rf.report_type = 'flex_statement') as latest_flex_statement_at,
     count(*) as source_file_count
 from raw.report_file rf
@@ -83,6 +78,15 @@ create or replace view analytics.v_overview_kpis as
 with latest as (
     select *
     from analytics.v_portfolio_latest
+),
+latest_daily_nav as (
+    select
+        as_of_date,
+        sum(total) as total_nav
+    from staging.ibkr_nav_snapshot
+    group by as_of_date
+    order by as_of_date desc
+    limit 1
 ),
 position_totals as (
     select
@@ -94,7 +98,7 @@ position_totals as (
 select
     latest.period_start,
     latest.period_end,
-    latest.ending_nav as total_investable_assets,
+    coalesce(latest_daily_nav.total_nav, latest.ending_nav) as total_investable_assets,
     latest.one_month_return,
     latest.period_return as ytd_return,
     latest.period_return as since_inception_return,
@@ -119,20 +123,42 @@ select
         else latest.mtm / latest.change_in_nav
     end as investment_share_of_nav_change
 from latest
+left join latest_daily_nav on true
 cross join position_totals;
 
 create or replace view analytics.v_portfolio_value_timeseries as
 select
-    period_end as as_of_date,
-    ending_nav,
-    deposits_withdrawals,
-    mtm,
-    interest,
-    fees_commissions,
-    change_in_nav
-from staging.ibkr_key_statistics
-where period_end is not null
-order by period_end;
+    as_of_date,
+    sum(total) as ending_nav,
+    sum(cash) as cash,
+    sum(stock) as stock,
+    sum(funds) as funds,
+    sum(options) as options,
+    sum(bonds) as bonds,
+    sum(coalesce(dividend_accruals, 0) + coalesce(interest_accruals, 0) + coalesce(fee_accruals, 0)) as accruals
+from staging.ibkr_nav_snapshot
+where as_of_date is not null
+group by as_of_date
+order by as_of_date;
+
+create or replace view analytics.v_portfolio_value_by_account as
+select
+    as_of_date,
+    case
+        when account_id = 'U24765593' then 'GIA'
+        when account_id = 'U25245520' then 'ISA'
+        else account_id
+    end as account,
+    account_id,
+    total as ending_nav,
+    cash,
+    stock,
+    funds,
+    options,
+    bonds
+from staging.ibkr_nav_snapshot
+where as_of_date is not null
+order by as_of_date, account;
 
 create or replace view analytics.v_monthly_growth_attribution as
 select
@@ -164,14 +190,26 @@ account_values as (
             when p.account_id = 'U25245520' then 'IBKR ISA'
             else p.account_id
         end as wrapper,
-        p.ending_nav as market_value
+        p.beginning_nav,
+        p.ending_nav as market_value,
+        p.period_return,
+        p.deposits,
+        p.dividends,
+        p.interest,
+        p.fees
     from staging.ibkr_account_period_performance p
     join latest_period l on l.period_end = p.period_end
 )
 select
     account_id,
     wrapper,
+    beginning_nav,
     market_value,
+    period_return,
+    deposits,
+    dividends,
+    interest,
+    fees,
     case
         when sum(market_value) over () = 0 then null
         else market_value / sum(market_value) over ()
@@ -197,33 +235,84 @@ select
     end as weight
 from analytics.v_positions_latest p;
 
-create or replace view analytics.v_performance_vs_benchmark as
+create or replace view analytics.v_asset_performance_ytd as
+with latest_holdings as (
+    select
+        account_id,
+        symbol,
+        description,
+        max(financial_instrument) as financial_instrument,
+        sum(market_value) as market_value,
+        sum(unrealized_pnl) as unrealized_pnl,
+        max(currency) as currency
+    from analytics.v_positions_latest
+    group by account_id, symbol, description
+),
+perf as (
+    select
+        account_id,
+        symbol,
+        description,
+        max(asset_class) as asset_class,
+        max(sub_category) as sub_category,
+        sum(mtm_mtd) as mtm_mtd,
+        sum(mtm_ytd) as mtm_ytd,
+        sum(realized_pnl_mtd) as realized_pnl_mtd,
+        sum(realized_pnl_ytd) as realized_pnl_ytd
+    from staging.ibkr_symbol_performance
+    group by account_id, symbol, description
+)
 select
-    period_type,
-    period_label,
-    bm1,
-    bm1_return,
-    bm2,
-    bm2_return,
-    account,
-    account_return,
-    account_return - bm1_return as active_return_vs_bm1,
-    account_return - bm2_return as active_return_vs_bm2
-from analytics.v_benchmark_comparison;
+    case
+        when coalesce(perf.account_id, latest_holdings.account_id) = 'U24765593' then 'GIA'
+        when coalesce(perf.account_id, latest_holdings.account_id) = 'U25245520' then 'ISA'
+        else coalesce(perf.account_id, latest_holdings.account_id)
+    end as account,
+    coalesce(perf.symbol, latest_holdings.symbol) as symbol,
+    coalesce(perf.description, latest_holdings.description) as description,
+    coalesce(perf.asset_class, latest_holdings.financial_instrument) as asset_class,
+    perf.sub_category,
+    latest_holdings.market_value,
+    case
+        when sum(latest_holdings.market_value) over () = 0 then null
+        else latest_holdings.market_value / sum(latest_holdings.market_value) over ()
+    end as weight,
+    latest_holdings.unrealized_pnl,
+    perf.mtm_mtd,
+    perf.mtm_ytd,
+    perf.realized_pnl_mtd,
+    perf.realized_pnl_ytd,
+    coalesce(perf.mtm_ytd, 0) + coalesce(perf.realized_pnl_ytd, 0) as total_pnl_ytd
+from perf
+full outer join latest_holdings
+    on latest_holdings.account_id = perf.account_id
+   and coalesce(latest_holdings.symbol, '') = coalesce(perf.symbol, '')
+   and coalesce(latest_holdings.description, '') = coalesce(perf.description, '')
+where coalesce(perf.symbol, latest_holdings.symbol, perf.description, latest_holdings.description) is not null;
 
-create or replace view analytics.v_monthly_returns as
+create or replace view analytics.v_asset_class_contribution as
 select
-    period_label as month_label,
-    bm1,
-    bm1_return,
-    bm2,
-    bm2_return,
-    account,
-    account_return,
-    account_return - bm1_return as active_return_vs_bm1
-from analytics.v_benchmark_comparison
-where period_type = 'month'
-order by period_label;
+    case
+        when account_id = 'U24765593' then 'GIA'
+        when account_id = 'U25245520' then 'ISA'
+        else account_id
+    end as account,
+    asset_class,
+    currency,
+    prior_period_value,
+    transactions,
+    mtm_pnl_prior_period_positions,
+    mtm_pnl_transactions,
+    corporate_actions,
+    other,
+    account_transfers,
+    linking_adjustments,
+    fx_translation_pnl,
+    future_price_adjustments,
+    settled_cash,
+    end_of_period_value,
+    coalesce(mtm_pnl_prior_period_positions, 0) + coalesce(mtm_pnl_transactions, 0) as total_mtm_pnl
+from staging.ibkr_asset_class_change;
 
 create or replace view analytics.v_recent_trades as
 select
@@ -312,33 +401,6 @@ checks as (
         'flex_statement_latest'::text as check_name,
         case when exists (select 1 from report_counts where report_type = 'flex_statement') then 'pass' else 'warning' end as status,
         coalesce((select file_count::text || ' file(s), latest at ' || latest_ingested_at::text from report_counts where report_type = 'flex_statement'), 'no sectioned flex statement files') as details
-    union all
-    select
-        'portfolio_summary_latest'::text as check_name,
-        case
-            when exists (select 1 from report_counts where report_type in ('portfolio_summary', 'flex_statement')) then 'pass'
-            else 'fail'
-        end as status,
-        coalesce(
-            (select 'portfolio summary latest at ' || latest_ingested_at::text from report_counts where report_type = 'portfolio_summary'),
-            (select 'sectioned flex latest at ' || latest_ingested_at::text from report_counts where report_type = 'flex_statement'),
-            'no portfolio summary or sectioned flex files'
-        ) as details
-    union all
-    select
-        'flex_trades_latest',
-        case when exists (select 1 from report_counts where report_type = 'flex_trades') then 'pass' else 'warning' end,
-        coalesce((select file_count::text || ' file(s), latest at ' || latest_ingested_at::text from report_counts where report_type = 'flex_trades'), 'no trades files')
-    union all
-    select
-        'flex_cash_latest',
-        case when exists (select 1 from report_counts where report_type = 'flex_cash') then 'pass' else 'warning' end,
-        coalesce((select file_count::text || ' file(s), latest at ' || latest_ingested_at::text from report_counts where report_type = 'flex_cash'), 'no cash files')
-    union all
-    select
-        'flex_interest_latest',
-        case when exists (select 1 from report_counts where report_type = 'flex_interest') then 'pass' else 'warning' end,
-        coalesce((select file_count::text || ' file(s), latest at ' || latest_ingested_at::text from report_counts where report_type = 'flex_interest'), 'no interest files')
     union all
     select
         'nav_vs_positions',

@@ -24,8 +24,6 @@ Include these sections:
 - `TIER`: Tier Interest Details
 - `IACC`: Interest Accruals, optional raw audit support
 
-The current dashboard does not require benchmark or sector sections.
-
 ## Flex Web Service
 
 Enable Flex Web Service and put the credentials in `.env`:

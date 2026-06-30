@@ -8,7 +8,7 @@ from decimal import Decimal
 from typing import Any
 
 from portfolio_warehouse.db import connect
-from portfolio_warehouse.ibkr_csv import parse_date, parse_datetime, parse_decimal, parse_period
+from portfolio_warehouse.ibkr_csv import parse_date, parse_datetime, parse_decimal
 
 
 def _get(payload: Mapping[str, Any], *keys: str) -> Any:
@@ -52,37 +52,16 @@ def rebuild_staging() -> None:
                     staging.ibkr_cash_transaction,
                     staging.ibkr_interest,
                     staging.ibkr_corporate_action,
+                    staging.ibkr_nav_snapshot,
+                    staging.ibkr_mark_to_market_performance,
+                    staging.ibkr_symbol_performance,
+                    staging.ibkr_asset_class_change,
                     staging.ibkr_account_period_performance,
                     staging.ibkr_key_statistics,
-                    staging.ibkr_position_snapshot,
-                    staging.ibkr_benchmark_return
+                    staging.ibkr_position_snapshot
                 """
             )
-            _load_flex_rows(conn)
             _load_flex_statement_rows(conn)
-            _load_portfolio_summary_rows(conn)
-
-
-def _load_flex_rows(conn: Any) -> None:
-    rows = conn.execute(
-        """
-        select r.report_id, r.report_type, r.row_number, r.raw_payload
-        from raw.ibkr_flex_row r
-        join raw.report_file f on f.report_id = r.report_id
-        order by f.ingested_at, r.report_id, r.row_number
-        """
-    ).fetchall()
-    for row in rows:
-        payload = row["raw_payload"]
-        report_type = row["report_type"]
-        if report_type == "flex_trades":
-            _insert_trade(conn, row["report_id"], payload)
-        elif report_type == "flex_cash":
-            _insert_cash(conn, row["report_id"], payload)
-        elif report_type == "flex_interest":
-            _insert_interest(conn, row["report_id"], payload)
-        elif report_type == "flex_corporate_actions":
-            _insert_corporate_action(conn, row["report_id"], payload)
 
 
 def _load_flex_statement_rows(conn: Any) -> None:
@@ -110,10 +89,18 @@ def _load_flex_statement_rows(conn: Any) -> None:
         elif section_code == "POST":
             _insert_flex_position_snapshot(conn, row["report_id"], payload)
         elif section_code == "EQUT":
+            _insert_nav_snapshot(conn, row["report_id"], payload)
             _insert_flex_cash_snapshot(conn, row["report_id"], payload)
+            _insert_flex_accrual_snapshot(conn, row["report_id"], payload)
         elif section_code == "CNAV":
             _insert_flex_account_performance(conn, row["report_id"], payload)
             cnav_rows.append((row["report_id"], payload))
+        elif section_code == "MTMP":
+            _insert_mark_to_market_performance(conn, row["report_id"], payload)
+        elif section_code == "MYTD":
+            _insert_symbol_performance(conn, row["report_id"], payload)
+        elif section_code == "CPOV":
+            _insert_asset_class_change(conn, row["report_id"], payload)
 
     _insert_flex_key_statistics(conn, cnav_rows)
 
@@ -237,7 +224,7 @@ def _insert_cash(conn: Any, report_id: str, payload: Mapping[str, Any]) -> None:
 def _insert_interest(conn: Any, report_id: str, payload: Mapping[str, Any]) -> None:
     if not _clean_text(payload.get("ClientAccountID")):
         return
-    source_row_hash = _row_hash("flex_interest", payload)
+    source_row_hash = _row_hash("tier_interest", payload)
     conn.execute(
         """
         insert into staging.ibkr_interest (
@@ -277,7 +264,7 @@ def _insert_corporate_action(conn: Any, report_id: str, payload: Mapping[str, An
     transaction_id = _clean_text(payload.get("TransactionID"))
     if not transaction_id and not _clean_text(payload.get("ActionDescription")):
         return
-    corporate_action_id = transaction_id or _row_hash("flex_corporate_actions", payload)
+    corporate_action_id = transaction_id or _row_hash("corporate_actions", payload)
     action_dt = parse_datetime(payload.get("Date/Time"))
     conn.execute(
         """
@@ -318,6 +305,230 @@ def _insert_corporate_action(conn: Any, report_id: str, payload: Mapping[str, An
             parse_decimal(payload.get("Quantity")),
             parse_decimal(payload.get("CostBasis")),
             _clean_text(payload.get("Type")),
+        ),
+    )
+
+
+def _insert_nav_snapshot(conn: Any, report_id: str, payload: Mapping[str, Any]) -> None:
+    account_id = _clean_text(payload.get("ClientAccountID"))
+    as_of = parse_date(payload.get("ReportDate"))
+    if not account_id or not as_of:
+        return
+    conn.execute(
+        """
+        insert into staging.ibkr_nav_snapshot (
+            report_id, account_id, as_of_date, currency, cash, stock, options, bonds, funds,
+            dividend_accruals, interest_accruals, fee_accruals, total
+        )
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        on conflict (account_id, as_of_date) do update set
+            report_id = excluded.report_id,
+            currency = excluded.currency,
+            cash = excluded.cash,
+            stock = excluded.stock,
+            options = excluded.options,
+            bonds = excluded.bonds,
+            funds = excluded.funds,
+            dividend_accruals = excluded.dividend_accruals,
+            interest_accruals = excluded.interest_accruals,
+            fee_accruals = excluded.fee_accruals,
+            total = excluded.total
+        """,
+        (
+            report_id,
+            account_id,
+            as_of,
+            _clean_text(payload.get("CurrencyPrimary")),
+            parse_decimal(payload.get("Cash")),
+            parse_decimal(payload.get("Stock")),
+            parse_decimal(payload.get("Options")),
+            parse_decimal(payload.get("Bonds")),
+            parse_decimal(payload.get("Funds")),
+            parse_decimal(payload.get("DividendAccruals")),
+            parse_decimal(payload.get("InterestAccruals")),
+            parse_decimal(payload.get("BrokerFeesAccrualsComponent")),
+            parse_decimal(payload.get("Total")),
+        ),
+    )
+
+
+def _insert_mark_to_market_performance(conn: Any, report_id: str, payload: Mapping[str, Any]) -> None:
+    account_id = _clean_text(payload.get("ClientAccountID"))
+    report_date = parse_date(payload.get("ReportDate"))
+    symbol = _clean_text(payload.get("Symbol"))
+    description = _clean_text(payload.get("Description"))
+    if not account_id or not report_date or (not symbol and not description):
+        return
+    source_row_hash = _row_hash(
+        "mark_to_market_performance",
+        {
+            "account_id": account_id,
+            "report_date": report_date,
+            "asset_class": _clean_text(payload.get("AssetClass")),
+            "symbol": symbol,
+            "description": description,
+            "isin": _clean_text(payload.get("ISIN")),
+        },
+    )
+    conn.execute(
+        """
+        insert into staging.ibkr_mark_to_market_performance (
+            source_row_hash, report_id, account_id, report_date, asset_class, sub_category, symbol,
+            description, isin, previous_close_quantity, previous_close_price, close_quantity, close_price,
+            transaction_mtm_pnl, prior_open_mtm_pnl, commissions, other, total, total_with_accruals
+        )
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        on conflict (source_row_hash) do update set
+            report_id = excluded.report_id,
+            account_id = excluded.account_id,
+            report_date = excluded.report_date,
+            asset_class = excluded.asset_class,
+            sub_category = excluded.sub_category,
+            symbol = excluded.symbol,
+            description = excluded.description,
+            isin = excluded.isin,
+            previous_close_quantity = excluded.previous_close_quantity,
+            previous_close_price = excluded.previous_close_price,
+            close_quantity = excluded.close_quantity,
+            close_price = excluded.close_price,
+            transaction_mtm_pnl = excluded.transaction_mtm_pnl,
+            prior_open_mtm_pnl = excluded.prior_open_mtm_pnl,
+            commissions = excluded.commissions,
+            other = excluded.other,
+            total = excluded.total,
+            total_with_accruals = excluded.total_with_accruals
+        """,
+        (
+            source_row_hash,
+            report_id,
+            account_id,
+            report_date,
+            _clean_text(payload.get("AssetClass")),
+            _clean_text(payload.get("SubCategory")),
+            symbol,
+            description,
+            _clean_text(payload.get("ISIN")),
+            parse_decimal(payload.get("PreviousCloseQuantity")),
+            parse_decimal(payload.get("PrevClosePrice")),
+            parse_decimal(payload.get("CloseQuantity")),
+            parse_decimal(payload.get("ClosePrice")),
+            parse_decimal(payload.get("TransactionMtmPnl")),
+            parse_decimal(payload.get("PriorOpenMtmPnl")),
+            parse_decimal(payload.get("Commissions")),
+            parse_decimal(payload.get("Other")),
+            parse_decimal(payload.get("Total")),
+            parse_decimal(payload.get("TotalWithAccruals")),
+        ),
+    )
+
+
+def _insert_symbol_performance(conn: Any, report_id: str, payload: Mapping[str, Any]) -> None:
+    account_id = _clean_text(payload.get("ClientAccountID"))
+    symbol = _clean_text(payload.get("Symbol"))
+    description = _clean_text(payload.get("Description"))
+    if not account_id or (not symbol and not description):
+        return
+    source_row_hash = _row_hash(
+        "symbol_performance",
+        {
+            "account_id": account_id,
+            "asset_class": _clean_text(payload.get("AssetClass")),
+            "symbol": symbol,
+            "description": description,
+            "isin": _clean_text(payload.get("ISIN")),
+        },
+    )
+    conn.execute(
+        """
+        insert into staging.ibkr_symbol_performance (
+            source_row_hash, report_id, account_id, asset_class, sub_category, symbol,
+            description, isin, mtm_mtd, mtm_ytd, realized_pnl_mtd, realized_pnl_ytd
+        )
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        on conflict (source_row_hash) do update set
+            report_id = excluded.report_id,
+            account_id = excluded.account_id,
+            asset_class = excluded.asset_class,
+            sub_category = excluded.sub_category,
+            symbol = excluded.symbol,
+            description = excluded.description,
+            isin = excluded.isin,
+            mtm_mtd = excluded.mtm_mtd,
+            mtm_ytd = excluded.mtm_ytd,
+            realized_pnl_mtd = excluded.realized_pnl_mtd,
+            realized_pnl_ytd = excluded.realized_pnl_ytd
+        """,
+        (
+            source_row_hash,
+            report_id,
+            account_id,
+            _clean_text(payload.get("AssetClass")),
+            _clean_text(payload.get("SubCategory")),
+            symbol,
+            description,
+            _clean_text(payload.get("ISIN")),
+            parse_decimal(payload.get("Mark-to-Market MTD")),
+            parse_decimal(payload.get("Mark-to-Market YTD")),
+            parse_decimal(payload.get("RealizedPnlMTD")),
+            parse_decimal(payload.get("RealizedPnlYTD")),
+        ),
+    )
+
+
+def _insert_asset_class_change(conn: Any, report_id: str, payload: Mapping[str, Any]) -> None:
+    account_id = _clean_text(payload.get("ClientAccountID"))
+    asset_class = _clean_text(payload.get("AssetClass"))
+    if not account_id or not asset_class:
+        return
+    source_row_hash = _row_hash(
+        "asset_class_change",
+        {"account_id": account_id, "asset_class": asset_class, "currency": _clean_text(payload.get("CurrencyPrimary"))},
+    )
+    conn.execute(
+        """
+        insert into staging.ibkr_asset_class_change (
+            source_row_hash, report_id, account_id, currency, asset_class, prior_period_value,
+            transactions, mtm_pnl_prior_period_positions, mtm_pnl_transactions, corporate_actions,
+            other, account_transfers, linking_adjustments, fx_translation_pnl,
+            future_price_adjustments, settled_cash, end_of_period_value
+        )
+        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        on conflict (source_row_hash) do update set
+            report_id = excluded.report_id,
+            account_id = excluded.account_id,
+            currency = excluded.currency,
+            asset_class = excluded.asset_class,
+            prior_period_value = excluded.prior_period_value,
+            transactions = excluded.transactions,
+            mtm_pnl_prior_period_positions = excluded.mtm_pnl_prior_period_positions,
+            mtm_pnl_transactions = excluded.mtm_pnl_transactions,
+            corporate_actions = excluded.corporate_actions,
+            other = excluded.other,
+            account_transfers = excluded.account_transfers,
+            linking_adjustments = excluded.linking_adjustments,
+            fx_translation_pnl = excluded.fx_translation_pnl,
+            future_price_adjustments = excluded.future_price_adjustments,
+            settled_cash = excluded.settled_cash,
+            end_of_period_value = excluded.end_of_period_value
+        """,
+        (
+            source_row_hash,
+            report_id,
+            account_id,
+            _clean_text(payload.get("CurrencyPrimary")),
+            asset_class,
+            parse_decimal(payload.get("Prior Period Value")),
+            parse_decimal(payload.get("Transactions")),
+            parse_decimal(payload.get("MtmPnlPriorPeriodPositions")),
+            parse_decimal(payload.get("MtmPnlTransactions")),
+            parse_decimal(payload.get("CorporateActions")),
+            parse_decimal(payload.get("Other")),
+            parse_decimal(payload.get("AccountTransfers")),
+            parse_decimal(payload.get("LinkingAdjustments")),
+            parse_decimal(payload.get("FXTranslationPnl")),
+            parse_decimal(payload.get("FuturePriceAdjustments")),
+            parse_decimal(payload.get("SettledCash")),
+            parse_decimal(payload.get("EndOfPeriodValue")),
         ),
     )
 
@@ -388,6 +599,7 @@ def _insert_flex_key_statistics(conn: Any, rows: list[tuple[str, Mapping[str, An
         ending_nav = _sum_payloads(payloads, "EndingValue")
         mtm = _sum_payloads(payloads, "Mtm")
         deposits_withdrawals = _sum_payloads(payloads, "DepositsWithdrawals")
+        period_return = _weighted_return(payloads)
         dividends = _sum_payloads(payloads, "Dividends", "ChangeInDividendAccruals")
         interest = _sum_payloads(payloads, "Interest", "ChangeInInterestAccruals")
         fees_commissions = _sum_payloads(
@@ -436,7 +648,7 @@ def _insert_flex_key_statistics(conn: Any, rows: list[tuple[str, Mapping[str, An
                 period_end,
                 beginning_nav,
                 ending_nav,
-                None,
+                period_return,
                 None,
                 None,
                 mtm,
@@ -460,6 +672,26 @@ def _sum_payloads(payloads: list[Mapping[str, Any]], *keys: str) -> Decimal | No
     if not values:
         return None
     return sum(values, Decimal("0"))
+
+
+def _weighted_return(payloads: list[Mapping[str, Any]]) -> Decimal | None:
+    weighted_values: list[Decimal] = []
+    total_weight = Decimal("0")
+    fallback_values: list[Decimal] = []
+    for payload in payloads:
+        twr = parse_decimal(payload.get("TWR"))
+        if twr is None:
+            continue
+        fallback_values.append(twr)
+        ending_nav = parse_decimal(payload.get("EndingValue"))
+        if ending_nav is not None and ending_nav > 0:
+            weighted_values.append(twr * ending_nav)
+            total_weight += ending_nav
+    if weighted_values and total_weight > 0:
+        return sum(weighted_values, Decimal("0")) / total_weight
+    if fallback_values:
+        return sum(fallback_values, Decimal("0")) / Decimal(len(fallback_values))
+    return None
 
 
 def _insert_flex_position_snapshot(conn: Any, report_id: str, payload: Mapping[str, Any]) -> None:
@@ -532,6 +764,44 @@ def _insert_flex_cash_snapshot(conn: Any, report_id: str, payload: Mapping[str, 
     )
 
 
+def _insert_flex_accrual_snapshot(conn: Any, report_id: str, payload: Mapping[str, Any]) -> None:
+    account_id = _clean_text(payload.get("ClientAccountID"))
+    as_of = parse_date(payload.get("ReportDate"))
+    accruals = _decimal_sum(
+        payload.get("DividendAccruals"),
+        payload.get("LiteSurchargeAccruals"),
+        payload.get("CGTWithholdingAccruals"),
+        payload.get("InterestAccruals"),
+        payload.get("IncentiveCouponAccruals"),
+        payload.get("BrokerFeesAccrualsComponent"),
+    )
+    if not account_id or not as_of or accruals is None or accruals == 0:
+        return
+    position_snapshot_id = _row_hash(
+        "flex_accrual_snapshot_key",
+        {"account_id": account_id, "as_of_date": as_of, "currency": _clean_text(payload.get("CurrencyPrimary"))},
+    )
+    _upsert_position_snapshot(
+        conn,
+        position_snapshot_id=position_snapshot_id,
+        report_id=report_id,
+        account_id=account_id,
+        as_of_date=as_of,
+        financial_instrument="Accruals",
+        currency=_clean_text(payload.get("CurrencyPrimary")),
+        symbol="ACCRUALS",
+        description="Accruals",
+        sector=None,
+        quantity=None,
+        close_price=None,
+        market_value=accruals,
+        cost_basis=None,
+        unrealized_pnl=None,
+        fx_rate_to_base=None,
+        is_total=False,
+    )
+
+
 def _upsert_position_snapshot(
     conn: Any,
     *,
@@ -594,223 +864,5 @@ def _upsert_position_snapshot(
             unrealized_pnl,
             fx_rate_to_base,
             is_total,
-        ),
-    )
-
-
-def _load_portfolio_summary_rows(conn: Any) -> None:
-    rows = conn.execute(
-        """
-        select r.report_id, r.row_number, r.section, r.row_type, r.raw_values
-        from raw.ibkr_portfolio_summary_row r
-        join raw.report_file f on f.report_id = r.report_id
-        order by f.ingested_at, r.report_id, r.row_number
-        """
-    ).fetchall()
-
-    headers: dict[tuple[str, str], list[str]] = {}
-    current_header: dict[tuple[str, str], list[str]] = {}
-    meta: dict[tuple[str, str], dict[str, Any]] = {}
-
-    for row in rows:
-        report_id = row["report_id"]
-        section = row["section"]
-        row_type = row["row_type"]
-        key = (str(report_id), section)
-        values = row["raw_values"].get("values", [])
-
-        if row_type == "MetaInfo" and len(values) >= 2:
-            meta.setdefault(key, {})[values[0]] = values[1]
-            continue
-        if row_type == "Header":
-            headers[key] = values
-            current_header[key] = values
-            continue
-        if row_type != "Data":
-            continue
-
-        header = current_header.get(key) or headers.get(key)
-        if not header:
-            continue
-        data = {column: values[index] if index < len(values) else "" for index, column in enumerate(header)}
-        if section == "Breakdown of Accounts":
-            _insert_account_period_performance(conn, report_id, data, meta.get(key, {}))
-        elif section == "Key Statistics":
-            _insert_key_statistics(conn, report_id, data, meta.get(key, {}))
-        elif section == "Open Position Summary":
-            _insert_position_snapshot(conn, report_id, data, meta.get(key, {}))
-        elif section == "Historical Performance Benchmark Comparison":
-            _insert_benchmark_return(conn, report_id, data, header)
-
-
-def _analysis_period(meta: Mapping[str, Any]) -> tuple[date | None, date | None]:
-    value = _clean_text(meta.get("Analysis Period"))
-    return parse_period(value) if value else (None, None)
-
-
-def _insert_account_period_performance(conn: Any, report_id: str, data: Mapping[str, Any], meta: Mapping[str, Any]) -> None:
-    account_id = _clean_text(data.get("Account"))
-    if not account_id:
-        return
-    period_start, period_end = _analysis_period(meta)
-    conn.execute(
-        """
-        insert into staging.ibkr_account_period_performance (
-            report_id, account_id, name, period_start, period_end, beginning_nav,
-            ending_nav, period_return, deposits, withdrawals, dividends, interest, fees
-        )
-        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        on conflict (account_id, period_start, period_end) do update set
-            report_id = excluded.report_id,
-            name = excluded.name,
-            beginning_nav = excluded.beginning_nav,
-            ending_nav = excluded.ending_nav,
-            period_return = excluded.period_return,
-            deposits = excluded.deposits,
-            withdrawals = excluded.withdrawals,
-            dividends = excluded.dividends,
-            interest = excluded.interest,
-            fees = excluded.fees
-        """,
-        (
-            report_id,
-            account_id,
-            _clean_text(data.get("Name")),
-            period_start,
-            period_end,
-            parse_decimal(data.get("Beginning NAV")),
-            parse_decimal(data.get("Ending NAV")),
-            parse_decimal(data.get("Return")),
-            parse_decimal(data.get("Deposits")),
-            parse_decimal(data.get("Withdrawals")),
-            parse_decimal(data.get("Dividends")),
-            parse_decimal(data.get("Interest")),
-            parse_decimal(data.get("Fees")),
-        ),
-    )
-
-
-def _insert_key_statistics(conn: Any, report_id: str, data: Mapping[str, Any], meta: Mapping[str, Any]) -> None:
-    period_start, period_end = _analysis_period(meta)
-    conn.execute(
-        """
-        insert into staging.ibkr_key_statistics (
-            report_id, period_start, period_end, beginning_nav, ending_nav, period_return,
-            one_month_return, three_month_return, mtm, deposits_withdrawals, dividends,
-            interest, fees_commissions, other, change_in_nav
-        )
-        values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        on conflict (period_start, period_end) do update set
-            report_id = excluded.report_id,
-            beginning_nav = excluded.beginning_nav,
-            ending_nav = excluded.ending_nav,
-            period_return = excluded.period_return,
-            one_month_return = excluded.one_month_return,
-            three_month_return = excluded.three_month_return,
-            mtm = excluded.mtm,
-            deposits_withdrawals = excluded.deposits_withdrawals,
-            dividends = excluded.dividends,
-            interest = excluded.interest,
-            fees_commissions = excluded.fees_commissions,
-            other = excluded.other,
-            change_in_nav = excluded.change_in_nav
-        """,
-        (
-            report_id,
-            period_start,
-            period_end,
-            parse_decimal(data.get("BeginningNAV")),
-            parse_decimal(data.get("EndingNAV")),
-            parse_decimal(data.get("PeriodReturn")),
-            parse_decimal(data.get("1MonthReturn")),
-            parse_decimal(data.get("3MonthReturn")),
-            parse_decimal(data.get("MTM")),
-            parse_decimal(data.get("Deposits & Withdrawals")),
-            parse_decimal(data.get("Dividends")),
-            parse_decimal(data.get("Interest")),
-            parse_decimal(data.get("Fees & Commissions")),
-            parse_decimal(data.get("Other")),
-            parse_decimal(data.get("ChangeInNAV")),
-        ),
-    )
-
-
-def _insert_position_snapshot(conn: Any, report_id: str, data: Mapping[str, Any], meta: Mapping[str, Any]) -> None:
-    symbol = _clean_text(data.get("Symbol"))
-    financial_instrument = _clean_text(data.get("FinancialInstrument"))
-    if not symbol and not financial_instrument:
-        return
-    as_of = parse_date(meta.get("As Of")) or parse_date(data.get("Date"))
-    is_total = _clean_text(data.get("Date")) == "Total"
-    position_snapshot_id = _row_hash(
-        "portfolio_position_snapshot_key",
-        {
-            "as_of_date": as_of,
-            "financial_instrument": financial_instrument,
-            "currency": _clean_text(data.get("Currency")),
-            "symbol": symbol,
-            "description": _clean_text(data.get("Description")),
-            "is_total": is_total,
-        },
-    )
-    _upsert_position_snapshot(
-        conn,
-        position_snapshot_id=position_snapshot_id,
-        report_id=report_id,
-        account_id=None,
-        as_of_date=as_of,
-        financial_instrument=financial_instrument,
-        currency=_clean_text(data.get("Currency")),
-        symbol=symbol,
-        description=_clean_text(data.get("Description")),
-        sector=_clean_text(data.get("Sector")),
-        quantity=parse_decimal(data.get("Quantity")),
-        close_price=parse_decimal(data.get("ClosePrice")),
-        market_value=parse_decimal(data.get("Value")),
-        cost_basis=parse_decimal(data.get("Cost Basis")),
-        unrealized_pnl=parse_decimal(data.get("UnrealizedP&L")),
-        fx_rate_to_base=parse_decimal(data.get("FXRateToBase")),
-        is_total=is_total,
-    )
-
-
-def _insert_benchmark_return(conn: Any, report_id: str, data: Mapping[str, Any], header: list[str]) -> None:
-    period_type = None
-    period_label = None
-    for candidate in ("Month", "Quarter", "Year"):
-        if candidate in header:
-            period_type = candidate.lower()
-            period_label = _clean_text(data.get(candidate))
-            break
-    if period_type is None and "Account" in header:
-        period_type = "summary"
-        period_label = _clean_text(data.get("Account"))
-    if not period_label:
-        return
-    conn.execute(
-        """
-        insert into staging.ibkr_benchmark_return (
-            report_id, period_type, period_label, bm1, bm1_return, bm2, bm2_return,
-            account, account_return
-        )
-        values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-        on conflict (period_type, period_label, account) do update set
-            report_id = excluded.report_id,
-            bm1 = excluded.bm1,
-            bm1_return = excluded.bm1_return,
-            bm2 = excluded.bm2,
-            bm2_return = excluded.bm2_return,
-            account_return = excluded.account_return
-        """,
-        (
-            report_id,
-            period_type,
-            period_label,
-            _clean_text(data.get("BM1")),
-            parse_decimal(data.get("BM1Return")),
-            _clean_text(data.get("BM2")),
-            parse_decimal(data.get("BM2Return")),
-            _clean_text(data.get("Account")),
-            parse_decimal(_get(data, "AccountReturn", "Since Inception")),
         ),
     )

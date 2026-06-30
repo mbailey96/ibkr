@@ -22,7 +22,7 @@ def render(data: dict[str, pd.DataFrame]) -> html.Div:
             kpi_card("Pipeline Status", overall, "Derived from data quality checks", value_class),
             kpi_card("Last Updated", fmt_datetime(latest.get("last_updated_at")), "Latest raw file ingestion"),
             kpi_card("Source Files", str(int(latest.get("source_file_count", 0))) if has_refresh else "-", "Raw IBKR files"),
-            kpi_card("Latest Snapshot", fmt_datetime(latest.get("latest_portfolio_summary_at")), "Portfolio summary"),
+            kpi_card("Latest Flex Statement", fmt_datetime(latest.get("latest_flex_statement_at")), "Sectioned Flex file"),
         ],
         className="kpi-grid compact",
     )

@@ -4,6 +4,10 @@ drop table if exists staging.ibkr_benchmark_return;
 drop table if exists staging.ibkr_position_snapshot;
 drop table if exists staging.ibkr_key_statistics;
 drop table if exists staging.ibkr_account_period_performance;
+drop table if exists staging.ibkr_asset_class_change;
+drop table if exists staging.ibkr_symbol_performance;
+drop table if exists staging.ibkr_mark_to_market_performance;
+drop table if exists staging.ibkr_nav_snapshot;
 drop table if exists staging.ibkr_corporate_action;
 drop table if exists staging.ibkr_interest;
 drop table if exists staging.ibkr_cash_transaction;
@@ -87,6 +91,80 @@ create table if not exists staging.ibkr_corporate_action (
     type text
 );
 
+create table if not exists staging.ibkr_nav_snapshot (
+    report_id uuid not null,
+    account_id text not null,
+    as_of_date date not null,
+    currency text,
+    cash numeric,
+    stock numeric,
+    options numeric,
+    bonds numeric,
+    funds numeric,
+    dividend_accruals numeric,
+    interest_accruals numeric,
+    fee_accruals numeric,
+    total numeric,
+    primary key (account_id, as_of_date)
+);
+
+create table if not exists staging.ibkr_mark_to_market_performance (
+    source_row_hash text primary key,
+    report_id uuid not null,
+    account_id text,
+    report_date date,
+    asset_class text,
+    sub_category text,
+    symbol text,
+    description text,
+    isin text,
+    previous_close_quantity numeric,
+    previous_close_price numeric,
+    close_quantity numeric,
+    close_price numeric,
+    transaction_mtm_pnl numeric,
+    prior_open_mtm_pnl numeric,
+    commissions numeric,
+    other numeric,
+    total numeric,
+    total_with_accruals numeric
+);
+
+create table if not exists staging.ibkr_symbol_performance (
+    source_row_hash text primary key,
+    report_id uuid not null,
+    account_id text,
+    asset_class text,
+    sub_category text,
+    symbol text,
+    description text,
+    isin text,
+    mtm_mtd numeric,
+    mtm_ytd numeric,
+    realized_pnl_mtd numeric,
+    realized_pnl_ytd numeric
+);
+
+create table if not exists staging.ibkr_asset_class_change (
+    source_row_hash text primary key,
+    report_id uuid not null,
+    account_id text,
+    currency text,
+    asset_class text,
+    prior_period_value numeric,
+    transactions numeric,
+    mtm_pnl_prior_period_positions numeric,
+    mtm_pnl_transactions numeric,
+    corporate_actions numeric,
+    other numeric,
+    account_transfers numeric,
+    linking_adjustments numeric,
+    fx_translation_pnl numeric,
+    future_price_adjustments numeric,
+    settled_cash numeric,
+    end_of_period_value numeric
+);
+
 create table if not exists staging.ibkr_account_period_performance (
     report_id uuid not null,
     account_id text not null,
@@ -140,17 +218,4 @@ create table if not exists staging.ibkr_position_snapshot (
     unrealized_pnl numeric,
     fx_rate_to_base numeric,
     is_total boolean not null default false
-);
-
-create table if not exists staging.ibkr_benchmark_return (
-    report_id uuid not null,
-    period_type text not null,
-    period_label text not null,
-    bm1 text,
-    bm1_return numeric,
-    bm2 text,
-    bm2_return numeric,
-    account text,
-    account_return numeric,
-    primary key (period_type, period_label, account)
 );

@@ -48,10 +48,10 @@ def app_header(refresh: pd.DataFrame, quality: pd.DataFrame) -> html.Header:
                         ],
                         className="badge-row",
                     ),
+                    html.Button("Reload From IBKR", id="refresh-data-button", n_clicks=0, className="refresh-button"),
                 ],
                 className="header-right",
             ),
         ],
         className="app-header",
     )
-

@@ -4,7 +4,14 @@ import pandas as pd
 from dash import dcc, html
 
 from components.cards import kpi_card, section
-from components.charts import allocation_bar, monthly_attribution_bar, nav_change_breakdown_bar, portfolio_value_line
+from components.charts import (
+    allocation_bar,
+    asset_performance_bar,
+    monthly_attribution_bar,
+    nav_change_breakdown_bar,
+    portfolio_value_by_account_line,
+    portfolio_value_line,
+)
 from components.formatting import fmt_currency, fmt_return, fmt_weight, pnl_class
 from components.tables import data_table
 
@@ -18,7 +25,7 @@ def render(data: dict[str, pd.DataFrame]) -> html.Div:
             kpi_card(
                 "Total Investable Assets",
                 fmt_currency(latest.get("total_investable_assets"), decimals=2),
-                "Latest PortfolioAnalyst NAV",
+                "Latest Flex NAV",
             ),
             kpi_card(
                 "Month Return",
@@ -64,6 +71,20 @@ def render(data: dict[str, pd.DataFrame]) -> html.Div:
                 [
                     html.H3("Portfolio Value"),
                     dcc.Graph(figure=portfolio_value_line(data["portfolio_value_timeseries"])),
+                ],
+                className="panel panel-wide",
+            ),
+            html.Div(
+                [
+                    html.H3("NAV By Account"),
+                    dcc.Graph(figure=portfolio_value_by_account_line(data["portfolio_value_by_account"])),
+                ],
+                className="panel panel-wide",
+            ),
+            html.Div(
+                [
+                    html.H3("Top Asset Contributors"),
+                    dcc.Graph(figure=asset_performance_bar(data["asset_performance"])),
                 ],
                 className="panel panel-wide",
             ),

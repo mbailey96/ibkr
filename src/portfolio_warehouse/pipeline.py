@@ -3,11 +3,13 @@ from __future__ import annotations
 import socket
 import time
 import traceback
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 
 from loguru import logger
 
+from portfolio_warehouse.db import connect
 from portfolio_warehouse.flex_web import fetch_flex_statement
 from portfolio_warehouse.ingest_files import IngestResult, ingest_paths
 from portfolio_warehouse.notifications import send_notification_email
@@ -84,6 +86,7 @@ def run_pipeline(*, settings: Settings | None = None, dry_run_fetch: bool = Fals
         raise PipelineValidationError("; ".join(warnings))
 
     result.finished_at = datetime.now()
+    _record_successful_run(result)
     logger.info(
         "Pipeline complete: ingested={}, skipped={}, validation_messages={}",
         result.ingested_count,
@@ -91,6 +94,30 @@ def run_pipeline(*, settings: Settings | None = None, dry_run_fetch: bool = Fals
         len(result.validation_messages),
     )
     return result
+
+
+def _record_successful_run(result: PipelineResult) -> None:
+    finished_at = result.finished_at or datetime.now()
+    with connect() as conn:
+        conn.execute(
+            """
+            insert into raw.pipeline_run (
+                run_id, source_system, status, started_at, finished_at, downloaded_files,
+                ingested_files, skipped_files, validation_message_count
+            )
+            values (%s, 'ibkr', 'success', %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                uuid.uuid4(),
+                result.started_at,
+                finished_at,
+                result.downloaded_files,
+                result.ingested_count,
+                result.skipped_count,
+                len(result.validation_messages),
+            ),
+        )
+        conn.commit()
 
 
 def notify_failure(*, settings: Settings, log_path: str, exc: BaseException) -> bool:

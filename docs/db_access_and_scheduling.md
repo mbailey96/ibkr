@@ -78,7 +78,7 @@ make PYTHON=/Users/mbailey/opt/anaconda3/envs/py311/bin/python uninstall-schedul
 The schedule uses:
 
 ```text
-PIPELINE_SCHEDULE_HOUR=20
+PIPELINE_SCHEDULE_HOUR=3
 PIPELINE_SCHEDULE_MINUTE=0
 ```
 
